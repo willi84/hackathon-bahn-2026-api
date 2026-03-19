@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 
 const SHEET_ID = "1j6ynbOnsiagktQ0sBX2dipWi0cJuJ6-Tgqo4Wp6Rokc";
 const GID = "2105428099"; // ggf. anpassen
-const TARGET = "docs/names.json";
+const TARGET = "docs/data.json";
 const URL =
   `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&gid=${GID}`;
 
