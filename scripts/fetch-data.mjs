@@ -1,10 +1,12 @@
 import fs from "node:fs/promises";
 
 const SHEET_ID = "1j6ynbOnsiagktQ0sBX2dipWi0cJuJ6-Tgqo4Wp6Rokc";
-const GID = "2105428099"; // ggf. anpassen
 const TARGET = "docs/data.json";
-const URL =
-  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&gid=${GID}`;
+const SHEET_NAMES = ["ROOMS", "TEAMS"];
+
+function buildSheetUrl(sheetName) {
+  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
+}
 
 function extractJsonFromGviz(text) {
   const start = text.indexOf("{");
@@ -22,46 +24,89 @@ function cell(row, index) {
   return String(row.c[index].v).trim();
 }
 
-async function main() {
-  const res = await fetch(URL);
+function normalizeKey(value) {
+  return String(value ?? "").trim();
+}
+
+function toItems(rows, cols, startRowIndex = 0) {
+  return rows.slice(startRowIndex).map((row) => {
+    const item = {};
+
+    for (let index = 0; index < cols.length; index += 1) {
+      item[cols[index]] = cell(row, index);
+    }
+
+    return item;
+  });
+}
+
+function toSheetData(data) {
+  const labeledCols = data.table?.cols.map((col, index) => col.label || `col_${index}`) || [];
+  const rows = data.table?.rows || [];
+  const hasOnlyGeneratedLabels = labeledCols.every((col, index) => col === `col_${index}`);
+
+  if (hasOnlyGeneratedLabels && rows.length > 0) {
+    const headerCols = labeledCols.map((_, index) => cell(rows[0], index) || `col_${index}`);
+    return {
+      cols: headerCols,
+      items: toItems(rows, headerCols, 1),
+    };
+  }
+
+  return {
+    cols: labeledCols,
+    items: toItems(rows, labeledCols),
+  };
+}
+
+function createEmptyTeamDetails(teamCols) {
+  return Object.fromEntries(teamCols.map((col) => [col, ""]));
+}
+
+function mergeRoomsWithTeams(rooms, teams) {
+  const emptyTeamDetails = createEmptyTeamDetails(teams.cols);
+  const teamsByKey = new Map(
+    teams.items
+      .filter((team) => normalizeKey(team.TEAM))
+      .map((team) => [normalizeKey(team.TEAM), team]),
+  );
+
+  return rooms.items.map((room) => {
+    const teamKey = normalizeKey(room.TEAM);
+    const teamDetails = teamKey ? teamsByKey.get(teamKey) || emptyTeamDetails : emptyTeamDetails;
+
+    return {
+      ...room,
+      TeamDetails: { ...teamDetails },
+    };
+  });
+}
+
+async function fetchSheet(sheetName) {
+  const url = buildSheetUrl(sheetName);
+  const res = await fetch(url);
 
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status} beim Abruf des Sheets`);
+    throw new Error(`HTTP ${res.status} beim Abruf des Sheets ${sheetName}`);
   }
 
   const text = await res.text();
-  const data = extractJsonFromGviz(text);
-  const rows = data.table?.rows || [];
+  return toSheetData(extractJsonFromGviz(text));
+}
 
-  if (!rows.length) {
-    throw new Error("Keine Zeilen im Sheet gefunden");
-  }
-
-  const headerRow = rows[0];
-  const headers = (headerRow.c || []).map((c) =>
-    c && c.v != null ? String(c.v).trim() : ""
-  );
-
-  const items = [];
-
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const obj = {};
-
-    for (let col = 0; col < headers.length; col++) {
-      const key = headers[col] || `col_${col}`;
-      obj[key] = cell(row, col);
-    }
-
-    if (obj.Name) {
-      items.push(obj);
-    }
-  }
+async function main() {
+  const [rooms, teams] = await Promise.all(SHEET_NAMES.map(fetchSheet));
+  const roomItems = mergeRoomsWithTeams(rooms, teams);
+  const finalData = {
+    cols: [...rooms.cols, "TeamDetails"],
+    items: roomItems,
+    teams,
+  };
 
   await fs.mkdir("docs", { recursive: true });
-  await fs.writeFile(TARGET, JSON.stringify(items, null, 2), "utf8");
+  await fs.writeFile(TARGET, JSON.stringify(finalData, null, 2), "utf8");
 
-  console.log(`Geschrieben: ${TARGET} (${items.length} Einträge)`);
+  console.log(`Geschrieben: ${TARGET} (${roomItems.length} ROOMS, ${teams.items.length} TEAMS)`);
 }
 
 main().catch((err) => {
